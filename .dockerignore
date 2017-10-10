@@ -1,0 +1,7 @@
+*
+!.version-definition
+!main.go
+!Makefile
+!pkg 
+!vendor
+!.pkg_config

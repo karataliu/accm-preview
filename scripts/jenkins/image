@@ -1,0 +1,17 @@
+pipeline {
+    agent any
+    stages {
+        stage ('Build') {
+            steps {
+                sh 'make clean image'
+            }
+        }
+        stage('Publish') {
+            steps {
+                withDockerRegistry([credentialsId: 'ac1', url: "https://${env.IMAGE_REPOSITORY}"]) {
+                    sh 'docker push $(scripts/image-tag.sh)'
+                }
+            }
+        }
+    }
+}

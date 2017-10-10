@@ -1,5 +1,5 @@
 hash: 70dfbc7e219f5832234bc81be3d17ab6659b09da10c46424f15ee094a2b0a4c3
-updated: 2017-10-10T15:40:54.395022521+08:00
+updated: 2017-10-10T17:13:33.055855946+08:00
 imports:
 - name: github.com/Azure/azure-sdk-for-go
   version: 2629e2dfcfeab50896230140542c3b9d89b35ae1
@@ -193,7 +193,7 @@ imports:
 - name: gopkg.in/yaml.v2
   version: 53feefa2559fb8dfa8d81baad31be332c97d6c77
 - name: k8s.io/api
-  version: ebe438721917240038ff1d3bf43a9d15b96f841b
+  version: b3eae2e8ae0a2c85797d727ba8befc55f993659f
   subpackages:
   - admissionregistration/v1alpha1
   - apps/v1beta1
@@ -220,11 +220,11 @@ imports:
   - storage/v1
   - storage/v1beta1
 - name: k8s.io/apiextensions-apiserver
-  version: 380c53df099b0508178423c040c2bde006d78943
+  version: 55ac0d0da0e454ea9ec3b202dbe7eb92e7202127
   subpackages:
   - pkg/features
 - name: k8s.io/apimachinery
-  version: 029bfa3c6ef963c346c4d43b5bd929303778fba5
+  version: c6f8126670b3f4a746e8133cab6e1b42ffc5c5f2
   subpackages:
   - pkg/api/equality
   - pkg/api/errors
@@ -276,7 +276,7 @@ imports:
   - third_party/forked/golang/json
   - third_party/forked/golang/reflect
 - name: k8s.io/apiserver
-  version: 26d43272299eba539e1ede38f0f3b5081e8c6fef
+  version: 4daf7c9389a93d09a013ddca9245ad84fed74b4c
   subpackages:
   - pkg/authentication/authenticator
   - pkg/authentication/serviceaccount
@@ -287,7 +287,7 @@ imports:
   - pkg/util/flag
   - pkg/util/logs
 - name: k8s.io/client-go
-  version: d055a4172adeb3dee3045730352fc0ff79bdfd95
+  version: 36d134ca322686a584425475963643afb9674057
   subpackages:
   - discovery
   - informers

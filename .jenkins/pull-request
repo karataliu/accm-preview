@@ -19,7 +19,7 @@ pipeline {
         }
         stage ('Clean up') {
             steps {
-                sh 'rm -rf _artifacts.kai'
+                sh 'rm -rf _artifacts.kai *.xml'
             }
         }
         stage('E2E Test') {
@@ -33,7 +33,7 @@ pipeline {
             steps {
                 withDockerContainer ([image: "${env.TEST_IMAGE}"]) {
                     withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'azure_sp', usernameVariable: 'K8S_AZURE_SPID', passwordVariable: 'K8S_AZURE_SPSEC']]) {
-                        sh "${env.K8S_AZURE_CMD} -ctype=smoke"
+                        sh "${env.K8S_AZURE_CMD} -ctype=default"
                     }
                 }
             }
@@ -42,10 +42,9 @@ pipeline {
             steps {
                 withDockerContainer ([image: "${env.TEST_IMAGE}"]) {
                     sh "cd _artifacts.kai && junit-combine */report"
+                    sh 'cp _artifacts.kai/result.xml $ghprbActualCommit.xml'
+                    azureUpload storageCredentialId: 'report', storageType: 'blobstorage', containerName: 'main', filesPath: "${env.ghprbActualCommit}.xml", fileShareName: ''
                 }
-                sh 'cp _artifacts.kai/result.xml $ghprbActualCommit.xml'
-                azureUpload storageCredentialId: 'report', storageType: 'blobstorage', containerName: 'main' , fileShareName: ''
-                    , filesPath: "${env.ghprbActualCommit}.xml"
              }
             post {
                 always {

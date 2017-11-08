@@ -1,0 +1,8 @@
+language: go
+go:
+  - 1.8.3
+env:
+  - TEST_SUITE=test-unit
+  - TEST_SUITE=test-lint-prepare test-lint
+script:
+  make $TEST_SUITE

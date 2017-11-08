@@ -1,0 +1,16 @@
+pipeline {
+    agent { docker { image 'microsoft/dotnet:2.0-sdk-jessie' } }
+    stages {
+        stage('clean') {
+            environment {
+                HOME = '/tmp'
+                K8S_AZURE_CLEANUP_TIMEOUT = '2:00'
+            }
+            steps {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'azure_sp', usernameVariable: 'K8S_AZURE_SPID', passwordVariable: 'K8S_AZURE_SPSEC']]) {
+                    sh 'cd test/k8s-azure/kautil && dotnet run clean'
+                }
+            }
+        }
+    }
+}

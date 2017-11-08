@@ -15,5 +15,5 @@
 # limitations under the License.
 
 TAG=azure-cloud-controller-manager:$(git rev-parse --short=7 HEAD)
-[ -z "$IMAGE_REPOSITORY" ] || TAG=$IMAGE_REPOSITORY/$TAG
+[ -z "$K8S_AZURE_IMAGE_REPOSITORY" ] || TAG=$K8S_AZURE_IMAGE_REPOSITORY/$TAG
 echo $TAG

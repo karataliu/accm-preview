@@ -1,0 +1,57 @@
+pipeline {
+    agent any
+    environment {
+        TEST_IMAGE = "$JOB_NAME:$BUILD_NUMBER"
+    }
+    stages {
+        stage ('test run image') {
+            steps {
+                sh "docker build test/k8s-azure -t $TEST_IMAGE"
+            }
+        }
+        stage ('production image') {
+            steps {
+                sh 'make clean image'
+                withDockerRegistry([credentialsId: 'azure_sp', url: "https://${env.K8S_AZURE_IMAGE_REPOSITORY}"]) {
+                    sh 'docker push $(scripts/image-tag.sh)'
+                }
+            }
+        }
+        stage ('Clean up') {
+            steps {
+                sh 'rm -rf _artifacts.kai'
+            }
+        }
+        stage('E2E Test') {
+            environment {
+                K8S_AZURE_CMD = 'k8s-azure e2e -v -caccmimage=$($WORKSPACE/scripts/image-tag.sh)'
+                K8S_AZURE_skipbuild = 1
+                K8S_AZURE_autorerun = 1
+                K8S_AZURE_global_skip_files = "$WORKSPACE/.jenkins/skip.txt"
+                K8S_AZURE_manifest = 'linux_ccm'
+            }
+            steps {
+                withDockerContainer ([image: "${env.TEST_IMAGE}"]) {
+                    withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'azure_sp', usernameVariable: 'K8S_AZURE_SPID', passwordVariable: 'K8S_AZURE_SPSEC']]) {
+                        sh "${env.K8S_AZURE_CMD} -ctype=smoke"
+                    }
+                }
+            }
+        }
+        stage('Collect') {
+            steps {
+                withDockerContainer ([image: "${env.TEST_IMAGE}"]) {
+                    sh "cd _artifacts.kai && junit-combine */report"
+                }
+                sh 'cp _artifacts.kai/result.xml $ghprbActualCommit.xml'
+                azureUpload storageCredentialId: 'report', storageType: 'blobstorage', containerName: 'main' , fileShareName: ''
+                    , filesPath: "${env.ghprbActualCommit}.xml"
+             }
+            post {
+                always {
+                    junit "_artifacts.kai/result.xml"
+                }
+            }
+        }
+    }
+}

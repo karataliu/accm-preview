@@ -1,0 +1,486 @@
+#!/usr/bin/env perl
+use 5.012;
+use warnings;
+use Carp qw(croak);
+use Cwd qw(getcwd);
+use File::Basename qw(dirname);
+use File::Path qw(remove_tree);
+use File::Spec::Functions qw(:DEFAULT rel2abs);
+import Util;
+
+my $SCRIPT_DIR = rel2abs(dirname(__FILE__));
+$Util::Config_From_Env_Prefix = 'K8S_AZURE_';
+runFlows(qw/deploy e2e/);
+
+use constant {
+  ARTIFACTS_DIR   => '_artifacts.kai',
+  CLUSTER_PROFILE => 'cluster.profile',
+};
+
+sub deploy {
+  for (qw/K8S_AZURE_SUBSID K8S_AZURE_SPID K8S_AZURE_SPSEC/) {
+    croak("Environment variable $_ must be specified") unless $ENV{$_};
+  }
+
+  my $config        = shift;
+  my $name          = $config->{name}         || croak('name reqired');
+  my $location      = $config->{location}     || croak('location reqired');
+  my $manifest      = $config->{manifest}     || 'linux';
+  my $manifest_dir  = $config->{manifest_dir} || catfile( $SCRIPT_DIR, 'manifest' );
+  my $accm_image    = $config->{accmimage}    // '';
+  my $az_env        = $config->{env}          // 'AzurePublicCloud';
+  my $spid          = $config->{spid}         // '';
+  my $spsec         = $config->{spsec}        // '';
+  my $sshPub        = $config->{sshpub}       // '';
+  my $adminPassword = $config->{password}     // '';
+  my $dns_prefix    = ( $name =~ tr/\.//dr );
+
+  runSteps([
+    step('Create cluster', sub {
+          my $ENGINE_FILE = 'kubernetes.ae.json';
+          my $engine_file_input = catfile( $manifest_dir, $manifest . '.json' );
+          croak("Engine input file '$engine_file_input' not found.") unless ( -e $engine_file_input );
+          editFile($engine_file_input , sub {
+                     s/{dnsPrefix}/$dns_prefix/
+                  || s/{servicePrincipalClientID}/$spid/
+                  || s/{servicePrincipalClientSecret}/$spsec/
+                  || s/{keyData}/$sshPub/
+                  || s/{adminPassword}/$adminPassword/
+                  || s/{customCcmImage}/$accm_image/
+                  || s/"location":\h*"\K.*"/$location"/
+            }, undef, $ENGINE_FILE)
+          && mlog("Creating cluster: $name")
+          && runCmd( "acs-engine deploy --api-model $ENGINE_FILE"
+            . " --azure-env $az_env --subscription-id \$K8S_AZURE_SUBSID --location $location --resource-group $name"
+            . " --auth-method client_secret --client-id \$K8S_AZURE_SPID --client-secret \$K8S_AZURE_SPSEC" );
+      }),
+      step('Generate cluster profile.', sub {
+          my $kube_config_file = rel2abs('kubeconfig');
+          editFile( "_output/$dns_prefix/kubeconfig/kubeconfig.$location.json", undef, undef, $kube_config_file )
+          && writeFile( CLUSTER_PROFILE, <<EOM);
+export KUBECONFIG=$kube_config_file
+alias km='ssh k8s-ci\@$dns_prefix.$location.cloudapp.azure.com'
+EOM
+      }),
+  ]);
+}
+
+sub e2e {
+  my $config                      = shift;
+  my $type                        = $config->{type}         || 'smoke';  # Test type
+  my $parallel                    = $config->{parallel}     // $type =~ /^(default|slow)$/;
+  my $skipdeploy                  = $config->{skipdeploy};
+  my $autorerun                   = $config->{autorerun};
+  my $global_skip_files           = $config->{global_skip_files};
+  my $skipclean                   = $config->{skipclean};
+
+  my $accm_image                  = $config->{accmimage}    || 'gcrio.azureedge.net/google_containers/cloud-controller-manager-amd64:v1.8.0';
+  my $subject                     = $config->{subject}      || $type;
+  # --ginkoFocus parameter, valid when type='_custom'.
+  my $customGinkgoFocus           = $config->{ginkgoFocus}  || '';
+  my $skipE2EBuild                = $config->{skipbuild}    // 0; # Skip build E2E tests.
+  my $location                    = $config->{location}     || `kautil location` || 'southeastasia'; # Test cluster location.
+  my $workspace                   = $config->{workspace} // $ENV{WORKSPACE} // getcwd;
+
+  chomp($location);
+
+  # https://github.com/kubernetes/community/blob/master/contributors/devel/e2e-tests.md#what-runs-in-ci
+  # kubernetes-e2e-<provider> runs
+  #   all non-[Slow], non-[Serial], non-[Disruptive], non-[Flaky], non-[Feature:.+] tests in parallel.
+  # kubernetes-e2e-<provider>-slow runs
+  #   all [Slow], non-[Serial], non-[Disruptive], non-[Flaky], non-[Feature:.+] tests in parallel.
+  # kubernetes-e2e-<provider>-serial runs
+  #   all [Serial] and [Disruptive], non-[Flaky], non-[Feature:.+] tests in serial.
+  my %testArgsMap = (
+    default => { skip => '[Slow]|[Serial]|[Disruptive]|[Flaky]|[Feature:.+]' },
+    serial  => {
+        focus => '[Serial]|[Disruptive]',
+        skip  => '[Slow]|[Flaky]|[Feature:.+]',
+    },
+    slow    => {
+        focus => '[Slow]',
+        skip  => '[Serial]|[Disruptive]|[Flaky]|[Feature:.+]',
+    },
+    custom  => { focus => $customGinkgoFocus },
+    smoke   => { focus => '^$' },
+  );
+
+  my @types = keys %testArgsMap;
+  croak "Unsupported type: $type, supported: ".join ', ', @types unless grep( /^$type$/, @types );
+
+  # Additional resource group segment, will create group: {K8R_USER}-CIK8S-time-type
+  my $e2eUser = $config->{K8R_USER} || "bot";
+  my $accmVersion = ($accm_image =~ s/.*://r);
+  
+  my $name = "$e2eUser-CIK8S-"._getTime()."-$accmVersion-$type";
+
+  my $artifacts_dir   = catfile($workspace, ARTIFACTS_DIR);
+  my $subject_dir     = catfile($artifacts_dir, $subject);
+  my $e2e_profile     = catfile($subject_dir, CLUSTER_PROFILE);
+  my $report_dir      = catfile($subject_dir, "report");
+  ensure_path($subject_dir);
+
+  my @global_skip_cases;
+  if ($global_skip_files){
+    for my $skipfile (split /,/,$global_skip_files) {
+      if (-e $skipfile) {
+        for (readFile($skipfile)) {
+          chomp; s/#.*$//; s/\s+$//; next if /^$/;
+          push @global_skip_cases, $_;
+        }
+      }
+    }
+  }
+
+  my $e2e_run = sub {
+    my ( $arg_focus_skip, $report_dir, $parallel ) = @_;
+
+    ensure_path($report_dir);
+
+    my $focus_arg;
+    $focus_arg = $arg_focus_skip->{focus} || '';
+    my $focus_arg_str = _escape($focus_arg);
+    my @skip_arg = @global_skip_cases;
+    push @skip_arg, $arg_focus_skip->{skip} if $arg_focus_skip->{skip};
+
+    my $testArgs = '';
+    $testArgs .= " --ginkgo.focus=$focus_arg_str" if $focus_arg_str;
+    $testArgs .= ' --ginkgo.skip='. _escape( join '|', @skip_arg ) if @skip_arg;
+
+    # hack in test-infra made E2E_REPORT_DIR not usable when dump dir exists
+    my $env = "E2E_REPORT_DIR=$report_dir";
+    $env .= " GINKGO_PARALLEL_NODES=20" if $parallel;
+    &_chdirK8SRoot
+    && runCmd(". $e2e_profile && $env ./e2e --get=false -- -v --test --check-version-skew=false"
+            . " --dump=$report_dir --test_args='$testArgs'");
+  };
+
+  runSteps([
+    step('Create test cluster', sub {
+      runCmd("kautil create $name $location", 1);
+      chdir($subject_dir)
+      && runFlow( \&deploy, { %$config, name => $name, location => $location, accmimage => $accm_image } );
+    }, sub { $skipdeploy }),
+    step('Update cluster profile.', sub {
+      my $e2eEnv = <<EOM;
+# export KUBERNETES_PROVIDER=azure # no use when conformance=y
+export KUBERNETES_CONFORMANCE_TEST=y
+export KUBERNETES_CONFORMANCE_PROVIDER=azure
+export CLOUD_CONFIG=1 # workaround for the new parameter.
+EOM
+      editFile($e2e_profile, undef, sub { $e2eEnv });
+    }, sub { $skipdeploy }),
+    step('Build E2E tests', sub {
+      &_chdirK8SRoot;
+      runCmd('make WHAT=cmd/kubectl && make WHAT=vendor/github.com/onsi/ginkgo/ginkgo && go build hack/e2e.go && ./e2e');
+      runCmd('make WHAT=test/e2e/e2e.test');
+    }, sub { $skipE2EBuild }),
+    step('Run E2E tests.', sub {
+      $e2e_run->($testArgsMap{$type}, $report_dir, $parallel);
+      1; # make test run cmd always pass
+    }),
+    step('Rerun failed cases', sub {
+      my $report_staging  = catfile($subject_dir, 'report.staging');
+      my $report_rerun    = catfile($subject_dir, 'report.rerun');
+
+      remove_tree($report_staging);
+      ensure_path($report_staging);
+      runCmd("cd $report_staging && junit-combine $report_dir");
+      my $rerun = catfile($report_staging, 'rerun.txt');
+      my @entries = readFile($rerun);
+      my $num = scalar @entries;
+      mlog("Found $num failed cases");
+      return 1 unless($num);
+
+      my $MAX_RERUN = 8;
+      if ($num > $MAX_RERUN) {
+        mlog("Do not support rerun more than $MAX_RERUN cases") ;
+        return 1;
+      }
+
+      chomp(@entries);
+      $e2e_run->({ focus => join '|', @entries}, $report_rerun, 0);
+
+      my $bak = $report_dir.'.origin';
+      remove_tree($bak);rename($report_dir, $bak); # report -> report.bak
+      ensure_path($report_dir); # write to report
+      runCmd("cd $report_dir && junit-combine $report_staging $report_rerun");
+    }, sub { !$autorerun }),
+    step('Clean up', sub {
+      runCmd("kautil delete $name");
+    }, sub { $skipclean }),
+  ]);
+}
+
+sub _escape {
+  ((($_[0] =~ s/ /\\s/gr) =~ s/\[/\\\[/gr) =~ s/\]/\\]/gr ) =~ tr/'/./r;
+}
+
+sub _getTime {
+  my ($sec,$min,$hour,$mday) = localtime(time);
+  return sprintf("%02d%02d%02d%02d", $mday, $hour, $min, $sec);
+}
+
+sub _chdirK8SRoot {
+  state $goPath    = $ENV{GOPATH} or croak('GOPATH not set, did you source right environment file?');
+  state $k8s_root  = catfile($goPath, 'src', 'k8s.io/kubernetes');
+  mlog("Switching to $k8s_root");
+  chdir($k8s_root);
+}
+
+BEGIN{
+  # Module util, provides flow running and file utils.
+  package Util;
+  use 5.012;
+  use warnings;
+  use B qw(svref_2object);
+  use Carp qw(confess croak);
+  use Exporter qw(import);
+  use File::Basename qw(dirname);
+  use File::Copy qw(copy);
+  use File::Path qw(make_path);
+  use Getopt::Long qw(:config gnu_getopt);
+  use IPC::Cmd qw(run);
+  use Pod::Usage qw(pod2usage);
+  use constant { LOGERR => 1, LOGINFO => 2, LOGDEBUG => 3, };
+  use vars('$logPrefix');
+
+  our $VERSION = '0.4.0';
+  our @EXPORT = qw(
+      mlog runCmd
+      runFlows runFlow runSteps step
+      readFile writeFile editFile
+      ensure_path
+  );
+
+  our $Config_From_Env_Prefix;
+  my ( $verbosity, $color, $dryrun, %flows, %parameter ) = ( LOGINFO, 'auto' );
+  $logPrefix = '';
+
+  sub mlog {
+    my $msg = shift;
+    my $level = shift // LOGINFO;
+    return 1 if $verbosity < $level;
+    state $doLog = do {
+      if ($color eq 'always' || -t STDOUT && $color ne 'never') {
+        require Win32::Console::ANSI if $^O eq 'MSWin32';
+        require Term::ANSIColor && import Term::ANSIColor qw(color);
+        my ($preHeader, $reset, $err, $info, $debug) = map { color($_) } qw/green reset red yellow white/;
+        sub {
+          my ($msg, $level) = @_;
+          my $preMessage = $level == LOGERR ? $err : $level == LOGINFO ? $info : $debug;
+          say $preHeader,$logPrefix,$preMessage,$msg,$reset;
+        };
+      } else {
+        sub { say $logPrefix,shift; };
+      }
+    };
+    $doLog->($msg, $level);
+  }
+
+  sub runCmd {
+    my ( $cmd, $quiet ) = @_;
+    mlog "Command Line: $cmd", LOGDEBUG;
+    return 1 if $dryrun;
+    my( $success, $error_message ) = run( command => $cmd, verbose => $quiet ? 0 : $verbosity >= LOGINFO );
+    mlog( "Command error: $error_message", LOGERR ) unless $success || $quiet;
+    return $success;
+  }
+
+  sub runFlows {
+    my @subnames = @_;
+    my $package = caller;
+    for my $subname (@subnames){
+      my $fullSubname = "${package}::${subname}";
+      defined(&$fullSubname) or confess "sub '$subname' not found";
+      my $flowname = ($subname =~ s/(_\w)/\U$1/gr);
+      $flowname =~ tr/_//d;
+      $flows{$flowname} = \&$fullSubname;
+    }
+
+    confess 'No registered flows found.' unless %flows;
+    my %optConfig;
+    GetOptions(
+      'verbose|v'   => sub { $verbosity = LOGDEBUG; },
+      'help|h'      => sub { pod2usage( -exitval => -1 , -verbose => $verbosity, -output => '-' ) },
+      'dryrun|n'    => sub { $dryrun = 1; },
+      'quiet|q'     => sub { $verbosity = LOGERR; },
+      'color|o=s'   => \$color,
+      'config|c=s'  => \%optConfig,
+    ) or exit(1);
+    @parameter{ map { (/(.*?)\.(.*)/) ? $2 : $_ } keys %optConfig } = values %optConfig;
+    my %env_parameter;
+    if ($Config_From_Env_Prefix) {
+      for my $name (keys %ENV) {
+        if ($name =~ /^$Config_From_Env_Prefix(.*)$/) {
+          $env_parameter{lc $1} = $ENV{$name};
+        }
+      }
+    }
+    %parameter = ( %env_parameter, %parameter );
+
+    my $flowname;
+    {
+      local $" = ', ';
+      my @supportedFlows = sort keys %flows;
+      $flowname = shift @ARGV || (say "Supported flows: @supportedFlows") && exit;
+      unless ( $flows{$flowname} ) {
+        my @matched = grep {/^$flowname/i} @supportedFlows;
+        confess( @matched == 0 
+                  ? "No flows match name '$flowname' found"
+                  : "Multiple flows match name '$flowname' found: '@matched'" )
+          if ( @matched != 1 );
+        $flowname = $matched[0];
+      }
+    }
+    runFlow($flows{$flowname}) or croak "Flow $flowname failed";
+  }
+
+  sub runFlow {
+    my $flow_sub        = shift;
+    my $flow_parameter  = shift // \%parameter;
+    my $flow_name       = svref_2object($flow_sub)->GV->NAME;
+
+    local $logPrefix = $logPrefix.'>';
+    mlog("Begin flow $flow_name", 3);
+    my $ret = &{ $flow_sub }($flow_parameter);
+    mlog("End flow $flow_name", 3);
+    $ret;
+  }
+
+  sub runSteps {
+    my $steps = shift;
+    my $len   = @$steps;
+    my $index = 0;
+    foreach my $step (@$steps) {
+      ++$index;
+      my $title = "($index/$len) $step->{name}";
+      mlog($title.' [SKIPPED]'), next if $step->{skip} && &{$step->{skip}};
+      mlog $title;
+      confess 'Step failed' unless &{$step->{run}};
+    }
+    1;
+  }
+
+  sub step { { name => $_[0], run => $_[1], skip => $_[2] }; }
+
+  sub writeFile {
+    return 1 if $dryrun;
+    my ( $path, $content ) = @_;
+    ensure_path(dirname($path));
+    open( my $FL, '>', $path ) or confess "Error writing to $path: $!.";
+    if (ref $content eq 'ARRAY') {
+      print $FL @$content;
+    } else {
+      print $FL $content;
+    }
+    close $FL;
+  }
+
+  sub editFile {
+    return 1 if $dryrun;
+    my ( $sourceFile, $lineEdit, $eofEdit, $targetFile ) = @_;
+    $targetFile //= $sourceFile;
+    mlog ("Edit file $sourceFile -> $targetFile", 3);
+    unless ($lineEdit || $eofEdit) {
+      return copy($sourceFile, $targetFile);
+    }
+    $lineEdit //= sub {};
+    my @lines = readFile($sourceFile);
+    &$lineEdit for @lines;
+    push @lines, &$eofEdit if $eofEdit;
+    writeFile($targetFile, \@lines);
+  }
+
+  sub readFile {
+    my $targetFile = shift;
+    confess "Could not open file '$targetFile'." unless -r $targetFile ;
+    return do { local @ARGV = $targetFile; local $/ unless wantarray; readline(); };
+  }
+
+  sub ensure_path {
+    my $path = shift;
+    mlog("Ensure path '$path' exists");
+    return 1 if $dryrun;
+    -d $path || make_path($path);
+  }
+
+  1;
+}
+
+__END__
+=head1 NAME
+
+k8s-azure - Prepare/Build/Test for kubernetes and run E2E tests on Azure cloud.
+
+=head1 SYNOPSIS
+
+k8s-azure [-n] [-q] [-v] [-c configKey=configValue] <deploy|e2e>
+
+=head1 DESCRIPTION
+
+B<This program> will help setup develop and test environment for Kubernetes.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-n>
+
+Dry run.
+
+=item B<-q>
+
+Show less information.
+
+=item B<-v>
+
+Be more verbose.
+
+=item B<-c>
+
+Key configruation.
+
+=back
+
+=head1 FLOWS
+
+=over 16
+
+=item B<prepare>
+
+Prepare proejct.
+
+=item B<build>
+
+Build the project.
+
+=item B<test>
+
+Run project test.
+
+=item B<e2e>
+
+Run end-to-end tests
+
+=back
+
+=head1 CONFIGS
+
+=head2 prepare
+
+=over 16
+
+=item B<root>
+
+Root dir for k8r
+
+=back
+
+=head1 EXAMPLES
+
+Create a profile named test, on workspace ~/k8r
+
+k8r prepare -cprofile=test -croot=~/k8r
+
+=cut

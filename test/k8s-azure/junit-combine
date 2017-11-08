@@ -1,0 +1,27 @@
+#!/usr/bin/perl -w
+use 5.012;
+use XML::Simple qw(:strict);
+#
+my $xs = XML::Simple->new(KeyAttr => [], ForceArray => 1);
+my %combine;
+
+for my $dir (@ARGV) {
+    for my $file (glob "$dir/*.xml") {
+        last if $file =~ /runner/;
+        my $cases = $xs->XMLin($file)->{testcase};
+        for my $case (@$cases) {
+            my $name=$case->{name};
+            $combine{$name} = $case if !$combine{$name} || $case->{failure} || !$case->{skipped};
+        }
+    }
+}
+
+open my $fh, '>', 'rerun.txt';
+for (sort keys %combine) {
+    say $fh $_ if $combine{$_}->{failure};
+}
+close $fh;
+
+open $fh, '>', 'result.xml';
+$xs->XMLout({testcase=>[@combine{sort keys %combine}]}, RootName => 'testsuite', OutputFile => $fh);
+close $fh;

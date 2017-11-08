@@ -3,3 +3,4 @@ staging_deps/
 testResults/
 .glide/
 .pkg_config
+obj/

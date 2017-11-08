@@ -1,0 +1,42 @@
+{
+  "apiVersion": "vlabs",
+  "location": "",
+  "properties": {
+    "orchestratorProfile": {
+      "orchestratorType": "Kubernetes",
+      "orchestratorRelease": "1.8",
+      "kubernetesConfig": {
+          "useCloudControllerManager": true,
+          "customCcmImage": "{customCcmImage}"
+      }
+    },
+    "masterProfile": {
+      "count": 1,
+      "dnsPrefix": "{dnsPrefix}",
+      "vmSize": "Standard_F2"
+    },
+    "agentPoolProfiles": [
+      {
+        "name": "agentpool1",
+        "count": 2,
+        "vmSize": "Standard_F1",
+        "availabilityProfile": "AvailabilitySet",
+        "storageProfile": "ManagedDisks"
+      }
+    ],
+    "linuxProfile": {
+      "adminUsername": "k8s-ci",
+      "ssh": {
+        "publicKeys": [
+          {
+            "keyData": "{keyData}"
+          }
+        ]
+      }
+    },
+    "servicePrincipalProfile": {
+      "clientID": "{servicePrincipalClientID}",
+      "secret": "{servicePrincipalClientSecret}"
+    }
+  }
+}

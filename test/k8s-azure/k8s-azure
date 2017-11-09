@@ -75,7 +75,7 @@ sub e2e {
   my $skipclean                   = $config->{skipclean};
 
   my $accm_image                  = $config->{accmimage}    || 'gcrio.azureedge.net/google_containers/cloud-controller-manager-amd64:v1.8.0';
-  my $subject                     = $config->{subject}      || $type;
+  my $subject                     = $config->{subject}      || '0';
   # --ginkoFocus parameter, valid when type='_custom'.
   my $customGinkgoFocus           = $config->{ginkgoFocus}  || '';
   my $skipE2EBuild                = $config->{skipbuild}    // 0; # Skip build E2E tests.
@@ -112,10 +112,11 @@ sub e2e {
   my $e2eUser = $config->{K8R_USER} || "bot";
   my $accmVersion = ($accm_image =~ s/.*://r);
   
-  my $name = "$e2eUser-CIK8S-"._getTime()."-$accmVersion-$type";
+  my $subject_type = "$subject-$type";
+  my $name = "$e2eUser-CIK8S-"._getTime()."-$subject_type-$accmVersion";
 
   my $artifacts_dir   = catfile($workspace, ARTIFACTS_DIR);
-  my $subject_dir     = catfile($artifacts_dir, $subject);
+  my $subject_dir     = catfile($artifacts_dir, $subject_type);
   my $e2e_profile     = catfile($subject_dir, CLUSTER_PROFILE);
   my $report_dir      = catfile($subject_dir, "report");
   ensure_path($subject_dir);

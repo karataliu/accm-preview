@@ -29,6 +29,7 @@ pipeline {
                 K8S_AZURE_autorerun = 1
                 K8S_AZURE_global_skip_files = "$WORKSPACE/.jenkins/skip.txt"
                 K8S_AZURE_manifest = 'linux_ccm'
+                K8S_AZURE_subject = "PR$ghprbPullId"
             }
             steps {
                 withDockerContainer ([image: "${env.TEST_IMAGE}"]) {

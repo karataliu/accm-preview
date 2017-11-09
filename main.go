@@ -23,7 +23,7 @@ import (
 
 	"github.com/Azure/kubernetes-azure-cloud-controller-manager/pkg/azureprovider"
 	"github.com/Azure/kubernetes-azure-cloud-controller-manager/pkg/version"
-	// "k8s.io/apiserver/pkg/server/healthz"
+	// "k8s.io/apiserver/pkg/server/heal
 	"k8s.io/apiserver/pkg/util/flag"
 	"k8s.io/apiserver/pkg/util/logs"
 	"k8s.io/kubernetes/cmd/cloud-controller-manager/app"
@@ -33,10 +33,6 @@ import (
 	"github.com/golang/glog"
 	"github.com/spf13/pflag"
 )
-
-// func init() {
-// 	healthz.DefaultHealthz()
-// }
 
 func main() {
 	s := options.NewCloudControllerManagerServer()

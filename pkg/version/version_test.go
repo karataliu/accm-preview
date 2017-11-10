@@ -24,5 +24,5 @@ import (
 
 func TestBasic(t *testing.T) {
 	info := getInfo()
-	assert.NotEmpty(t, info.GoVersion)
+	assert.Empty(t, info.GoVersion)
 }

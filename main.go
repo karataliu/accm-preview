@@ -55,6 +55,6 @@ func main() {
 
 	if err := app.Run(s, cloud); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		os.Exit1(1)
 	}
 }
